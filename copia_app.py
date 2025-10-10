@@ -35,8 +35,6 @@ ORIGINAL_TO_RENAMED = {
     'CABS Index': 'ABS',
     'BCOMTR Index': 'Commodities',
     'GLD US EQUITY': 'Oro',
-    'Private Debt': 'Private Debt', 
-    'Private Equity': 'Private Equity',
     'MXWD Index': 'World equities'
 }
 
@@ -44,7 +42,7 @@ ORIGINAL_TO_RENAMED = {
 MODEL_ASSETS = [
     "USA", "Europa equities", "UK", "Japon", "Asia", "Latam",
     "US HY", "US IG", "Europa bonds", "Latam corp", "Emerging sov", "ABS",
-    "Commodities", "Oro", "Private Debt", "Private Equity", 
+    "Commodities", "Oro"
 ]
 
 # Default priors, views, confidences from notebook
@@ -52,23 +50,21 @@ DEFAULT_PRIORS = {
     "USA": 0.055, "Europa equities": 0.083, "UK": 0.067, "Japon": 0.06,
     "Asia": 0.08, "Latam": 0.066, "US HY": 0.052, "US IG": 0.045,
     "Europa bonds": 0.024, "Latam corp": 0.074, "Emerging sov": 0.071,
-    "ABS": 0.05, "Commodities": 0.045, "Oro": 0.09, "Private Debt": 0.085,"Private Equity": 0.080
+    "ABS": 0.05, "Commodities": 0.045, "Oro": 0.09
 }
 
 DEFAULT_VIEWS = {
     "USA": 0.10, "Europa equities": 0.06, "UK": 0.07, "Japon": 0.06,
     "Asia": 0.085, "Latam": 0.07, "US HY": 0.06, "US IG": 0.045,
     "Europa bonds": 0.05, "Latam corp": 0.075, "Emerging sov": 0.075,
-    "ABS": 0.05, "Commodities": 0.05, "Oro": 0.10, "Private Debt": 0.085,
-    "Private Equity": 0.080
+    "ABS": 0.05, "Commodities": 0.05, "Oro": 0.10
 }
 
 DEFAULT_CONFIDENCES = {
     "USA": 0.6, "Europa equities": 0.5, "UK": 0.5, "Japon": 0.5,
     "Asia": 0.6, "Latam": 0.4, "US HY": 0.5, "US IG": 0.75,
     "Europa bonds": 0.5, "Latam corp": 0.6, "Emerging sov": 0.5,
-    "ABS": 0.8, "Commodities": 0.5, "Oro": 0.5,
-    "Private Debt": 0.85, "Private Equity": 0.55
+    "ABS": 0.8, "Commodities": 0.5, "Oro": 0.5
 }
 
 # ---------- Helpers (risk metrics and constraints) ----------
@@ -91,26 +87,22 @@ def var_loss(w, mu, alpha=0.05):
 def port_vol(w, cov):
     return np.sqrt(np.dot(w.T, np.dot(cov, w)))
 
-def max_weight_constraint_list(returns_modelos, portafolio_modelo):
-    constraints = []
-    for asset in portafolio_modelo.index:
+def get_portfolio_asset_constraints():
+    # Assumes MODEL_ASSETS order
+    return [
+        {'type': 'ineq', 'fun': lambda w: w[0:6].sum() - 0.25},  # >=25% equities
+        {'type': 'ineq', 'fun': lambda w: w[6:12].sum() - 0.25}, # >=25% bonds
+        {'type': 'ineq', 'fun': lambda w: w[12:14].sum() - 0.00},# >=0% commodities
+        {'type': 'ineq', 'fun': lambda w: 0.40 - w[0:6].sum()},  # <=70% equities
+        {'type': 'ineq', 'fun': lambda w: 0.70 - w[6:12].sum()}, # <=70% bonds
+        {'type': 'ineq', 'fun': lambda w: 0.15 - w[12:14].sum()} # <=15% commodities
+    ]
 
-        constraints.append({
-            'type': 'ineq', 
-            'fun': lambda w, a=asset: 
-                (1.2 * portafolio_modelo[a]) - w[returns_modelos.columns.get_loc(a)]
-        })
-    return constraints 
-
-def min_weight_constraint_list(returns_modelos, portafolio_modelo):
-    constraints = []
-    for asset in portafolio_modelo.index:
-        constraints.append({
-            'type': 'ineq', 
-            'fun': lambda w, a=asset: 
-                w[returns_modelos.columns.get_loc(a)] - (0.8 * portafolio_modelo[a])
-        })
-    return constraints 
+def get_asset_maximums(n_assets, max_weight=0.15):
+    cons = []
+    for i in range(n_assets):
+        cons.append({'type': 'ineq', 'fun': lambda w, i=i: max_weight - w[i]})
+    return cons
 
 def neg_sharpe_penalizado(w, mu, cov):
     port_return = np.dot(w, mu)
@@ -121,10 +113,7 @@ def neg_sharpe_penalizado(w, mu, cov):
 
 # ---------- Data loading ----------
 def load_data_from_excel(file_obj_or_path):
-    excel_file = pd.ExcelFile(file_obj_or_path)
-    df = excel_file.parse(
-        sheet_name='Retornos', index_col=0, parse_dates=True
-    )
+    df = pd.read_excel(file_obj_or_path, index_col=0, parse_dates=True)
 
     df = df.sort_index(ascending=True)
     df = df.rename(columns=ORIGINAL_TO_RENAMED)
@@ -136,13 +125,7 @@ def load_data_from_excel(file_obj_or_path):
     returns = df.pct_change().dropna(how="all")
     returns_modelos = returns[MODEL_ASSETS].dropna(how="all")
 
-    # Load portfolio weights
-    portafolio_modelo = excel_file.parse(
-        sheet_name='Pesos', index_col=0, header=None).squeeze("columns").to_dict()
-    portafolio_modelo = pd.Series(portafolio_modelo)
-
-
-    return df, returns, returns_modelos, portafolio_modelo
+    return df, returns, returns_modelos
 
 # ---------- Models ----------
 def run_black_litterman(returns_modelos, priors, views, confidences):
@@ -160,15 +143,6 @@ def run_black_litterman(returns_modelos, priors, views, confidences):
 
     ef = EfficientFrontier(ret_bl, S_bl)  # expects pandas
     ef.add_objective(objective_functions.L2_reg)
-
-    #Restricciones por asset class
-    for asset in portafolio_modelo.index:
-        ef.add_constraint(lambda w, asset_name=asset: w[returns_modelos.columns.get_loc(asset_name)] >= 0.8 * portafolio_modelo[asset_name])
-
-    for asset in portafolio_modelo.index:
-        ef.add_constraint(lambda w, asset_name=asset: w[returns_modelos.columns.get_loc(asset_name)] <= 1.2 * portafolio_modelo[asset_name])
-
-
     ef.max_sharpe()
     weights = pd.Series(ef.clean_weights())
     weights = weights.reindex(MODEL_ASSETS, fill_value=0.0)
@@ -197,9 +171,8 @@ def run_mvo(returns_modelos, priors, views, confidences):
         {'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0},
         {'type': 'ineq', 'fun': lambda w: w}  # non-negative weights
     ]
-
-    cons += max_weight_constraint_list(returns_modelos, portafolio_modelo)
-    cons += min_weight_constraint_list(returns_modelos, portafolio_modelo)
+    cons += get_portfolio_asset_constraints()
+    cons += get_asset_maximums(n, max_weight=0.15)
 
     bounds = [(0.0, 1.0)] * n
     w0 = np.ones(n) / n
@@ -214,6 +187,42 @@ def run_mvo(returns_modelos, priors, views, confidences):
     port_return = float((weights @ mu).round(4)) * 100.0
     port_mvo_vol = port_vol(weights, cov) * 100.0
     return weights, mu, cov, port_return, port_mvo_vol
+
+def run_min_variance(returns_modelos, priors, views, confidences):
+    S = returns_modelos.cov() * 365
+    bl = BlackLittermanModel(
+        S,
+        pi=pd.Series(priors),
+        absolute_views=views,
+        omega="idzorek",
+        view_confidences=list(confidences.values())
+    )
+    mu = bl.bl_returns()
+    cov = bl.bl_cov().values
+    vol = np.sqrt(np.diag(cov))  # Volatility of the posterior covariance
+    n = len(MODEL_ASSETS)
+
+    cons = [
+        {'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0},
+        {'type': 'ineq', 'fun': lambda w: w}  # non-negative weights
+    ]
+    cons += get_portfolio_asset_constraints()
+    cons += get_asset_maximums(n, max_weight=0.15)
+
+    bounds = [(0.0, 1.0)] * n
+    w0 = np.ones(n) / n
+
+    res = minimize(
+        port_vol, w0, args=(cov,), method='SLSQP',
+        bounds=bounds, constraints=cons, options={'maxiter': 1000}
+    )
+    if not res.success:
+        raise RuntimeError(f"Min-Var optimization failed: {res.message}")
+
+    weights = pd.Series(res.x, index=MODEL_ASSETS)
+    port_return = float((weights @ mu).round(4)) * 100.0
+    port_mv_vol = res.fun *100.0 
+    return weights, mu, vol, port_return, port_mv_vol
 
 def create_asset_risk_return_plot(dataframe, x_col, y_col, title):
     """Crear gráfico de retorno vs riesgo"""
@@ -297,7 +306,7 @@ if run_btn:
     try:
         # --- PASO 1: CARGA DE DATOS ---
         if uploaded is not None:
-            data, returns, returns_modelos, portafolio_modelo = load_data_from_excel(uploaded)
+            data, returns, returns_modelos = load_data_from_excel(uploaded)
         else:
             st.error("Please upload an Excel file or provide a valid absolute path.")
             st.stop()
@@ -309,6 +318,7 @@ if run_btn:
         # Se ejecutan todos los cálculos primero para tener los resultados listos.
         bl_w, bl_mu, bl_S, bl_ret, bl_vol = run_black_litterman(returns_modelos, priors, views, confidences)
         mvo_w, _, _, mvo_ret, mvo_vol = run_mvo(returns_modelos, priors, views, confidences)
+        mv_w, _, _, mv_ret, mv_vol = run_min_variance(returns_modelos, priors, views, confidences)
 
         # --- PASO 3: VISUALIZACIÓN DE RESULTADOS ---
 
@@ -358,173 +368,34 @@ if run_btn:
             st.altair_chart(chart_bl, use_container_width=True)
 
         with col2:
-            st.subheader("Portafolio Modelo")
-            # Usamos st.metric con un valor que reserve el espacio vertical
-            # y evitamos mostrar información al usuario (etiquetas vacías con &nbsp;)
-            st.metric(label="&nbsp;", value="-") 
-            st.metric(label="&nbsp;", value="-")
-            chart_modelo = create_weights_chart(portafolio_modelo) # Gráfico con los pesos correctos
-            st.altair_chart(chart_modelo, use_container_width=True)
-
-        with col3:
             st.subheader("Mean-Variance Optimization")
             st.metric("Retorno del Portafolio", f"{mvo_ret:.2f}%")
             st.metric("Volatilidad del Portafolio", f"{mvo_vol:.2f}%")
             chart_mvo = create_weights_chart(mvo_w) # Gráfico con los pesos correctos
             st.altair_chart(chart_mvo, use_container_width=True)
 
-
-        # Tabla comparativa de ponderaciones
-        df_comparacion = pd.DataFrame({
-            'Black-Litterman': bl_w,
-            'Portafolio Modelo': portafolio_modelo,
-            'Diferencia': bl_w - portafolio_modelo
-        }).reindex(MODEL_ASSETS).reset_index().rename(columns={'index': 'Activo'})
-
-        df_comparacion_equities = pd.DataFrame({
-            'Black-Litterman': bl_w[0:6]/bl_w[0:6].sum(),
-            'Portafolio Modelo': portafolio_modelo[0:6]/portafolio_modelo[0:6].sum(),
-            'Diferencia': (bl_w[0:6]/bl_w[0:6].sum()) - (portafolio_modelo[0:6]/portafolio_modelo[0:6].sum())
-        }).reset_index().rename(columns={'index': 'Activo'})
-        
-        # 1. Calculamos las sumas para las columnas relevantes usando .loc para mayor claridad
-        suma_bl = df_comparacion['Black-Litterman'].iloc[0:6].sum()
-        suma_modelo = df_comparacion['Portafolio Modelo'].iloc[0:6].sum()
-
-        # 2. Creamos la nueva fila como un DataFrame de 1xN
-        #    Añadimos también la columna 'Activo' y 'Diferencia' para que coincida con el esquema
-        total_equities_df = pd.DataFrame(
-            {
-                'Activo': ['Total Equity'],
-                'Black-Litterman': [suma_bl],
-                'Portafolio Modelo': [suma_modelo],
-                'Diferencia': [suma_bl - suma_modelo]
-            }
-        )
-
-        # 3. Concatenamos la nueva fila a la cabeza del DataFrame original
-        #    Pasamos la nueva fila y el DataFrame original dentro de una LISTA []
-        df_comparacion_equities = pd.concat(
-            [total_equities_df, df_comparacion_equities],  # <- Lista de DataFrames
-            ignore_index=True
-        )
-
-        #COMPARACIÓN BONOS
-        BOND_ASSETS = MODEL_ASSETS[6:12]  
-
-        df_comparacion_bonos = pd.DataFrame({
-            'Black-Litterman': bl_w[6:12]/bl_w[6:12].sum(),
-            'Portafolio Modelo': portafolio_modelo[6:12]/portafolio_modelo[6:12].sum(),
-            'Diferencia': (bl_w[6:12]/bl_w[6:12].sum()) - (portafolio_modelo[6:12]/portafolio_modelo[6:12].sum())
-        }).reindex(BOND_ASSETS).reset_index().rename(columns={'index': 'Activo'})
-
-        # 1. Calculamos las sumas para las columnas relevantes usando .loc para mayor claridad
-        suma_bl = df_comparacion['Black-Litterman'].iloc[6:12].sum()
-        suma_modelo = df_comparacion['Portafolio Modelo'].iloc[6:12].sum()
-
-        # 2. Creamos la nueva fila como un DataFrame de 1xN
-        #    Añadimos también la columna 'Activo' y 'Diferencia' para que coincida con el esquema
-        total_bonos_df = pd.DataFrame(
-            {
-                'Activo': ['Total Bonos'],
-                'Black-Litterman': [suma_bl],
-                'Portafolio Modelo': [suma_modelo],
-                'Diferencia': [suma_bl - suma_modelo]
-            }
-        )
-
-        # 3. Concatenamos la nueva fila a la cabeza del DataFrame original
-        df_comparacion_bonos = pd.concat(
-            [total_bonos_df, df_comparacion_bonos], 
-            ignore_index=True
-        )
-
-        df_comparacion_alternativos = pd.DataFrame({
-            'Black-Litterman': bl_w[12:16]/bl_w[12:16].sum(),
-            'Portafolio Modelo': portafolio_modelo[12:16]/portafolio_modelo[12:16].sum(),
-            'Diferencia': (bl_w[12:16]/bl_w[12:16].sum()) - (portafolio_modelo[12:16]/portafolio_modelo[12:16].sum())
-        }).reset_index().rename(columns={'index': 'Activo'})
-
-        # 1. Calculamos las sumas para las columnas relevantes usando .loc para mayor claridad
-        suma_bl = df_comparacion['Black-Litterman'].iloc[12:16].sum()
-        suma_modelo = df_comparacion['Portafolio Modelo'].iloc[12:16].sum()
-
-        # 2. Creamos la nueva fila como un DataFrame de 1xN
-        #    Añadimos también la columna 'Activo' y 'Diferencia' para que coincida con el esquema
-        total_alternativos_df = pd.DataFrame(
-            {
-                'Activo': ['Total Alternativos'],
-                'Black-Litterman': [suma_bl],
-                'Portafolio Modelo': [suma_modelo],
-                'Diferencia': [suma_bl - suma_modelo]
-            }
-        )
-
-        # 3. Concatenamos la nueva fila a la cabeza del DataFrame original
-        df_comparacion_alternativos = pd.concat(
-            [total_alternativos_df, df_comparacion_alternativos], 
-            ignore_index=True
-        )
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write("#### Comparación de Ponderaciones")
-            st.dataframe(
-                df_comparacion.set_index('Activo').style.format({
-                    'Black-Litterman': '{:.2%}',
-                    'Portafolio Modelo': '{:.2%}',
-                    'Diferencia': '{:.2%}'
-                }),
-                height=500 # Ajusta la altura de la tabla
-            )
-
-        with col2:
-            st.write("#### Comparación de Ponderaciones Renta Variable")
-            st.dataframe(
-                df_comparacion_equities.set_index('Activo').style.format({
-                    'Black-Litterman': '{:.2%}',
-                    'Portafolio Modelo': '{:.2%}',
-                    'Diferencia': '{:.2%}'
-                }),
-            )        
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write("#### Comparación de Ponderaciones Renta Fija")
-            st.dataframe(
-                df_comparacion_bonos.set_index('Activo').style.format({
-                    'Black-Litterman': '{:.2%}',
-                    'Portafolio Modelo': '{:.2%}',
-                    'Diferencia': '{:.2%}'
-                }),
-            )
-
-        with col2:
-            st.write("#### Comparación de Ponderaciones Alternativos")
-            st.dataframe(
-                df_comparacion_alternativos.set_index('Activo').style.format({
-                    'Black-Litterman': '{:.2%}',
-                    'Portafolio Modelo': '{:.2%}',
-                    'Diferencia': '{:.2%}'
-                }),
-            )     
+        with col3:
+            st.subheader("Minimum Variance")
+            st.metric("Retorno del Portafolio", f"{mv_ret:.2f}%")
+            st.metric("Volatilidad del Portafolio", f"{mv_vol:.2f}%")
+            chart_mv = create_weights_chart(mv_w) # Gráfico con los pesos correctos
+            st.altair_chart(chart_mv, use_container_width=True)
 
         # --- NUEVA SECCIÓN: Gráfico de Riesgo vs Retorno por Activo ---
         st.divider()
         st.subheader("3. Análisis de Riesgo-Retorno por Activo (Posterior)")
         st.write("Visualización de los retornos esperados y la volatilidad para cada activo después del ajuste de Black-Litterman.")
 
-        # 1. Preparar los datos 
+        # 1. Preparar los datos (esto ya lo tenías, pero es crucial)
         df_risk_return = pd.DataFrame({
             'Retorno': bl_mu,
             'Volatilidad': bl_S
         }).reset_index().rename(columns={'index': 'Activo'})
-                           
+
         # 2. Crear y mostrar el gráfico en una columna
         col1, col2 = st.columns([2, 1]) # Damos más espacio al gráfico
 
         with col1:
-            # --- LLAMADA A LA NUEVA Y CORRECTA FUNCIÓN ---
             fig1 = create_asset_risk_return_plot(
                 df_risk_return, 
                 'Volatilidad',
@@ -542,7 +413,7 @@ if run_btn:
                     'Volatilidad': '{:.2%}'
                 }),
                 height=500 # Ajusta la altura de la tabla
-            )
+    )
 
         # 3.3: Resumen de las restricciones aplicadas
         st.divider()
