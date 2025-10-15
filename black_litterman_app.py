@@ -140,7 +140,7 @@ def load_data_from_excel(file_obj_or_path):
     portafolio_modelo = excel_file.parse(
         sheet_name='Pesos', index_col=0, header=None).squeeze("columns").to_dict()
     portafolio_modelo = pd.Series(portafolio_modelo)
-
+    portafolio_modelo = portafolio_modelo.reindex(MODEL_ASSETS)
 
     return df, returns, returns_modelos, portafolio_modelo
 
@@ -546,7 +546,7 @@ if run_btn:
 
         # 3.3: Resumen de las restricciones aplicadas
         st.divider()
-        st.subheader("Restricciones Aplicadas (a MVO y Min-Variance)")
+        st.subheader("Restricciones Aplicadas a los modelos")
         st.markdown(
             "- Pesos no negativos; la suma de pesos es 100%\n"
             "- **Renta Variable** (primeros 6): min 25%, max 70%\n"
